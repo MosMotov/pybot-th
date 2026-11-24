@@ -5,7 +5,7 @@
     python -m pybot -p "your message"        one reply, then exit
     echo "your message" | python -m pybot    one reply per input line
 
-PyBot itself is the `bot` package next to this file, exactly as the swarm of agents wrote it.
+PyBot itself is the `bot` package next to this file.
 This file only adds the command line. It holds no chatbot logic of its own.
 """
 import argparse
@@ -31,16 +31,50 @@ LOGO = r"""
 """.strip("\n")
 TAGLINE = "A chatbot written in plain Python. No weights, no training, just rules."
 
-# What the interactive chat puts in front of each turn.
+# What the interactive chat puts in front of each turn.  The bot's answers are
+# language-aware modules, while these strings are only the terminal chrome.
 USER_PREFIX = "user: "
 BOT_PREFIX = "pybot: "
 
 HINT = "Type a message and press Enter. /reset starts a new conversation, /exit quits."
-
 HELP = """Commands:
   /reset   clear the screen and start again (PyBot forgets what was said)
   /help    show this help
   /exit    quit (Ctrl+D works too)"""
+
+_UI = {
+    "en": {
+        "user_prefix": USER_PREFIX,
+        "bot_prefix": BOT_PREFIX,
+        "tagline": TAGLINE,
+        "hint": HINT,
+        "help": HELP,
+        "loading": "Loading PyBot...",
+        "reset": "New conversation.\n",
+        "exit": ("/exit", "/quit", "/bye"),
+        "help_commands": ("/help",),
+        "reset_commands": ("/reset",),
+    },
+    "th": {
+        "user_prefix": "ผู้ใช้: ",
+        "bot_prefix": "บอต: ",
+        "tagline": "แชตบอตที่เขียนด้วย Python และตอบด้วยกฎ",
+        "hint": "พิมพ์ข้อความแล้วกด Enter /รีเซ็ต เริ่มการสนทนาใหม่ /ออก ออกจากโปรแกรม",
+        "help": """คำสั่ง
+  /รีเซ็ต   เริ่มการสนทนาใหม่ (บอตจะลืมสิ่งที่คุยกัน)
+  /ช่วยเหลือ แสดงความช่วยเหลือนี้
+  /ออก      ออกจากโปรแกรม""",
+        "reset": "เริ่มการสนทนาใหม่\n",
+        "exit": ("/ออก", "/ออกจากโปรแกรม", "/exit", "/quit", "/bye"),
+        "help_commands": ("/ช่วยเหลือ", "/help"),
+        "reset_commands": ("/รีเซ็ต", "/reset"),
+        "loading": "กำลังโหลด PyBot...",
+    },
+}
+
+# English remains the default so existing scripts and callers keep their
+# output.  Thai is selected explicitly with ``--lang th``.
+SUPPORTED_LANGUAGES = tuple(_UI)
 
 
 def load_bot():
@@ -54,6 +88,24 @@ def load_bot():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from bot import runtime
     return runtime
+
+
+def _configure_utf8_stdio():
+    """Make Thai input and replies work on Windows when no encoding was requested."""
+    if os.name != "nt" or os.environ.get("PYTHONIOENCODING"):
+        return
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None or stream.isatty():
+            continue
+        encoding = (getattr(stream, "encoding", "") or "").replace("-", "").replace("_", "").lower()
+        if encoding == "utf8":
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors=stream.errors)
+        except (OSError, ValueError):
+            # Some embedders expose a stream whose encoding cannot be changed.
+            continue
 
 
 def answer(runtime, text, memory):
@@ -93,11 +145,17 @@ def pipe(runtime, args):
             print(details(module, seconds), file=sys.stderr, flush=True)
 
 
-def opening():
+def _ui(args):
+    """Return the terminal strings for the selected language."""
+    return _UI.get(getattr(args, "lang", "en"), _UI["en"])
+
+
+def opening(lang="en"):
     """What the chat shows when it starts, and again after /reset."""
+    ui = _UI.get(lang, _UI["en"])
     print(LOGO + "\n")
-    print(TAGLINE)
-    print(HINT + "\n")
+    print(ui["tagline"])
+    print(ui["hint"] + "\n")
 
 
 def clear_screen():
@@ -121,45 +179,47 @@ def chat(runtime, args):
         import readline  # noqa: F401 - line editing and history for input()
     except ImportError:
         pass
-    opening()
+    ui = _ui(args)
+    opening(getattr(args, "lang", "en"))
     memory = {}
     first = args.prompt
     while True:
         if first is not None:
             text, first = first, None
-            print(USER_PREFIX + text)
+            print(ui["user_prefix"] + text)
         else:
             try:
-                text = input(USER_PREFIX)
+                text = input(ui["user_prefix"])
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
         command = text.strip().lower()
-        if command in ("/exit", "/quit", "/bye"):
+        if command in ui["exit"]:
             break
-        if command == "/reset":
+        if command in ui["reset_commands"]:
             memory = {}
             if args.seed is not None:
                 random.seed(args.seed)
             if sys.stdout.isatty():
                 clear_screen()
-                opening()
+                opening(getattr(args, "lang", "en"))
             else:
-                print("New conversation.\n")
+                print(ui["reset"])
             continue
-        if command == "/help":
-            print(HELP + "\n")
+        if command in ui["help_commands"]:
+            print(ui["help"] + "\n")
             continue
         if not command:
             continue
         reply, module, seconds = answer(runtime, text, memory)
-        print(BOT_PREFIX + reply)
+        print(ui["bot_prefix"] + reply)
         if args.verbose:
             print(details(module, seconds))
         print()
 
 
 def main(argv=None):
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(
         prog="pybot",
         description="Chat with PyBot, a chatbot written in plain Python: no model, no weights.",
@@ -173,18 +233,21 @@ def main(argv=None):
                         help="seed for PyBot's choice of wording, to get the same replies again")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="after each reply, show the module that produced it and the time it took")
+    parser.add_argument("--lang", choices=SUPPORTED_LANGUAGES, default="en",
+                        help="language for the interactive terminal UI (default: en)")
     parser.add_argument("--version", action="version",
                         version="pybot %s (bot at commit %s)" % (__version__, SOURCE_COMMIT[:12]))
     args = parser.parse_args(argv)
+    ui = _UI[args.lang]
 
     if args.seed is not None:
         random.seed(args.seed)
     interactive = (args.prompt is None and sys.stdin.isatty()) or (args.prompt is not None and args.interactive)
     if interactive:
-        print("Loading PyBot...", end="", file=sys.stderr, flush=True)
+        print(ui["loading"], end="", file=sys.stderr, flush=True)
     runtime = load_bot()
     if interactive:
-        print("\r" + " " * 16 + "\r", end="", file=sys.stderr, flush=True)
+        print("\r" + " " * len(ui["loading"]) + "\r", end="", file=sys.stderr, flush=True)
         chat(runtime, args)
     elif args.prompt is not None:
         one_shot(runtime, args)

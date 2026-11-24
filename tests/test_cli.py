@@ -40,7 +40,7 @@ def chat(typed, **options):
 
 def chat_output(typed, terminal=False, **options):
     """Run the interactive chat; return (the prompts shown, everything printed, as one string)."""
-    args = argparse.Namespace(prompt=None, interactive=False, seed=None, verbose=False)
+    args = argparse.Namespace(prompt=None, interactive=False, seed=None, verbose=False, lang="en")
     for name, value in options.items():
         setattr(args, name, value)
     typed = iter(typed)
@@ -76,6 +76,19 @@ class ChatOpening(unittest.TestCase):
             self.assertLessEqual(len(line), 80)
             self.assertEqual(line, line.rstrip())
             self.assertTrue(all(ord(character) < 128 for character in line))
+
+    def test_thai_language_uses_thai_opening_and_labels(self):
+        prompts, lines = chat(["/ออก"], lang="th")
+        self.assertEqual(prompts, ["ผู้ใช้: "])
+        self.assertIn("แชตบอต", "\n".join(lines))
+        self.assertIn("พิมพ์ข้อความ", "\n".join(lines))
+
+    def test_thai_language_accepts_thai_help_and_reset_commands(self):
+        prompts, lines = chat(["/ช่วยเหลือ", "/รีเซ็ต", "/ออก"], lang="th")
+        self.assertEqual(prompts, ["ผู้ใช้: "] * 3)
+        self.assertIn("คำสั่ง", lines)
+        self.assertIn("เริ่มการสนทนาใหม่", lines)
+        self.assertFalse(any(line.startswith("บอต: ") for line in lines))
 
 
 class ChatTurnsAreLabelled(unittest.TestCase):
@@ -139,12 +152,33 @@ class ResetClearsTheConversation(unittest.TestCase):
 
 
 class OneShotAndPipeStayPlain(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows legacy pipe encoding")
+    def test_redirected_thai_session_uses_utf8_on_both_output_streams(self):
+        env = dict(os.environ, PYTHONUTF8="0")
+        env.pop("PYTHONIOENCODING", None)
+        result = subprocess.run(
+            [sys.executable, "-m", "pybot", "--lang", "th", "-i", "-p", "สวัสดี"],
+            input="/ออก\n".encode(), capture_output=True, cwd=ROOT, env=env, timeout=600)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("บอต: สวัสดี", result.stdout.decode("utf-8"))
+        self.assertIn("กำลังโหลด PyBot", result.stderr.decode("utf-8"))
+
     def test_p_prints_the_reply_alone(self):
         result = run(["-p", "hello"])
         self.assertEqual(result.returncode, 0)
         lines = result.stdout.splitlines()
         self.assertEqual(len(lines), 1)
         self.assertFalse(lines[0].startswith("pybot: "))
+
+    def test_lang_th_does_not_add_cli_labels_to_one_shot_output(self):
+        result = run(["--lang", "th", "-p", "hello"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        self.assertFalse(any(label in result.stdout for label in ("ผู้ใช้:", "บอต:")))
+
+    def test_lang_accepts_only_supported_languages(self):
+        result = run(["--lang", "xx", "-p", "hello"])
+        self.assertNotEqual(result.returncode, 0)
 
     def test_piped_input_matches_the_bots_own_loop(self):
         typed = "hello\nhow do i descale a kettle\nhow long does that take\n\nthanks\n"

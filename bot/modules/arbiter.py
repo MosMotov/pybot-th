@@ -207,6 +207,10 @@ def choose(text, memory, candidates):
     candidates: [{"module": name, "priority": PRIORITY, "reply": text}], highest PRIORITY
     first. memory["turns"] holds the earlier turns of the conversation.
     """
+    # English topic and repetition heuristics cannot rank Thai prose. A safety
+    # candidate, when present, still comes first in the runtime's priority order.
+    if candidates and candidates[0]["module"] == "thai":
+        return 0
     try:
         index = _choose(text, memory, candidates)
     except Exception:  # noqa: BLE001 - the arbiter must never lose a turn
